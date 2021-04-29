@@ -1,0 +1,405 @@
+---
+title: "Analysis 10X dataset"
+output: 
+  html_document:
+    fig_caption: yes
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: cerulean
+editor_options: 
+  chunk_output_type: console
+params:
+  prefix: "merge"
+  resDEG: "SCT_snn_res.0.25"
+  percent.mito: 0.15
+  regress.batch: FALSE
+  sc.transform: TRUE
+---
+
+<!-- qrsh -P crem-seq -l h_rt=6:00:00 -pe omp 8 -->
+
+<!-- module load R/3.6.0 -->
+<!-- module load python3/3.6.5 # UMAP -->
+<!-- module load pandoc/2.5 # knitr -->
+
+<!-- R -->
+<!-- Testing: -->
+<!-- params <- list() -->
+<!-- params$prefix <- "merged" -->
+<!-- params$resDEG <- "SCT_snn_res.0.25" -->
+<!-- params$percent.mito <- 0.15 -->
+<!-- params$regress.batch <- FALSE -->
+<!--  Day1  Day13  Day14  Day5  Day7  Day9 -->
+
+
+
+```{r setup, include=FALSE, cache=FALSE}
+library(future)
+plan("multiprocess", workers = 6)
+options(future.globals.maxSize = 8000 * 1024^2)
+
+ifelse(dir.exists("/mnt/scc/project_workspace/"),
+       cremwd <- "/mnt/scc/",
+       cremwd <- "/restricted/projectnb/crem-bioinfo/")
+master_path <- file.path(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/analysis/")
+prefix <- params$prefix
+calculations_path <- paste0(master_path, prefix, "/")
+plots_path <- file.path(calculations_path, "plots/")
+rds_path <- file.path(calculations_path, "rds/")
+cache_path <- file.path(calculations_path, "cache/") 
+dir.create(rds_path, recursive = T)
+dir.create(plots_path, recursive = T)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE,error = FALSE,warning = FALSE, cache = TRUE, cache.path = cache_path, fig.width=9,fig.height=7, autodep=TRUE, collapse = FALSE, fig.path = plots_path, fig.keep = "all", comment = "##", dev = c("png", "pdf"), cache.lazy = FALSE)
+options(tibble.print_max = 150)
+
+library(tidyverse)
+library(harmony)
+library(Seurat)
+library(Matrix)
+library(matrixStats) #rowVars
+library(magrittr)
+library(dplyr)
+library(RColorBrewer)
+library(kableExtra)
+library(data.table) # getting counts
+library(knitr)
+library(clustree)
+```
+
+
+```{r load_objects, eval=FALSE}
+sc <- readRDS(paste0(rds_path, "sc.Rds"))
+```
+
+
+```{r load_objects_previous_analysis, eval=TRUE}
+sc <- readRDS(paste0(master_path, "merged.sctransform.2samples.after.final.filt/rds/sc.Rds")) # previous analysis
+```
+
+
+
+
+
+```{r interesting_genes}
+interesting_genes <- unique(c("CD34","PROM1","VNN2","ITGA6","THY1","PROCR","CDH5","TEK","CXCR4","CD164","ENG","PTPRC","CD38","CD34","TEK","CLEC1B","ENG","PROCR","FLT4","PECAM1","CD34","GYPA","TFR","HBB","HBG1","HBG2","HBE","HBA","SLC4A1","CD36","GATA1","KLF1","TAL1","THY1", "PTPRC", "ITGA6", "PROM1", "EPCR", "PROCR", "CDH5", "CD144", "TIE2", "CD202b", "VEGFR3", "CLEC2", "GYPA", "CXCR4", "ENG", "THBD"))
+
+
+cat("Pre-selected genes: ", interesting_genes)
+interesting_genes <- interesting_genes[interesting_genes %in% rownames(sc)]
+cat("Pre-selected genes expressed in current dataset: ", interesting_genes)
+```
+
+# Dimensionality reduction
+
+```{r dim_red_pca}
+sc <- SCTransform(sc, vars.to.regress=c("percent.mito","S.Score","G2M.Score"),  verbose = FALSE)
+ 
+sc <- RunPCA(sc, features = VariableFeatures(sc), verbose = F)
+sc <- ProjectDim(sc, verbose = F)
+print(x = sc[['pca']], dims = 1:5, nfeatures = 5, projected = FALSE)
+
+ElbowPlot(sc)
+ggsave(paste0(plots_path, "elbow.pdf"))
+
+Idents(sc) <- "Phase"
+DimPlot(sc, reduction = "pca")
+```
+
+These are the genes driving the first 9 principal components
+
+```{r dim_heatmap, fig.height=11}
+DimHeatmap(sc, dims = 1:9, cells = 500, balanced = TRUE)
+```
+
+# Clustering
+
+Use tSNE and UMAP for non-linear dimensionality reduction
+
+Use Louvain algorithm for community detection.
+
+```{r cluster_and_rdim, eval=TRUE, results=FALSE}
+sc <- FindNeighbors(sc, dims = 1:30, graph.name = "CCregress")
+sc <- FindClusters(sc, resolution = seq(0.20, 0.05, -0.05), graph.name = "CCregress") # reverse order, seurat_clusters takes last run's value
+sc <- FindClusters(sc, resolution = seq(1.5, 0.25, -0.25), graph.name = "CCregress") # reverse order, seurat_clusters takes last run's value
+sc <- RunUMAP(sc, dims = 1:30)
+```
+
+Non-linear dimensionality reduction with tSNE and UMAP
+
+```{r plot_rdim}
+Idents(sc) <- "orig.ident"
+DimPlot(sc, reduction = "umap") + theme_void() + labs(title ="UMAP")
+ggsave(paste0(plots_path, "UMAP.pdf"), width = 7, height = 3)
+```
+
+
+```{r}
+saveRDS(sc, paste0(rds_path, "sc.Rds"))
+```
+
+Number of cells per cluster at different Louvain resolutions:
+
+```{r}
+if (params$sc.transform) {
+  table(sc$SCT_snn_res.1.5)
+  table(sc$SCT_snn_res.1.25)
+  table(sc$SCT_snn_res.0.75)
+  table(sc$SCT_snn_res.0.5)
+  table(sc$SCT_snn_res.0.25)
+  table(sc$orig.ident)
+  clustree(sc, prefix = "SCT_snn_res.")
+} else {
+  table(sc$RNA_snn_res.1.5)
+  table(sc$RNA_snn_res.1.25)
+  table(sc$RNA_snn_res.0.75)
+  table(sc$RNA_snn_res.0.5)
+  table(sc$RNA_snn_res.0.25)
+  table(sc$seurat_clusters)  
+  table(sc$orig.ident)
+}
+```
+
+
+# Cell-cycle stage classification
+
+Score G1, G2/M and S signatures in each cell.
+
+Classify phase based on that score.
+
+```{r CC_regression, eval=TRUE}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+sc <- CellCycleScoring(sc, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+grouping <- "Phase"; DimPlot(sc, reduction.use = "umap", group.by =  grouping, pt.size = 2) + NoAxes()
+if (params$sc.transform) {
+  kable(table(sc$Phase, sc$SCT_snn_res.0.25), caption="Cell cycle stage classification per cluster") %>%   kable_styling() %>%   scroll_box(width = "100%", height = "200px")
+} else {
+  kable(table(sc$Phase, sc$RNA_snn_res.0.25), caption="Cell cycle stage classification per cluster") %>%   kable_styling() %>%   scroll_box(width = "100%", height = "200px")
+}
+```
+
+# Molecular Signatures scoring
+
+Compute enrichment for molecular signatures using method from Tirosh et al, Science (2016)
+
+```{r mol_sig_score, fig.height=11}
+msig <- read_csv(paste0(cremwd, "/reference_data/gene_sets/kim.citeseq.20190826.csv"), comment = "#", col_names = FALSE)
+msig <- split(msig$X1, msig$X2)
+sc.markers.wilcox.res <- readRDS(paste0(cremwd, "project_workspace/19_10_22_kim_popescu/calculations/analysis/harmonization_updated/rds/sc.markers.wilcox.Cell.Labels.Rds"))
+msig2 <- split(sc.markers.wilcox.res[[2]]$gene, sc.markers.wilcox.res[[2]]$cluster)
+msig <- c(msig, msig2)
+sc <- AddModuleScore(sc, features = msig, name = names(msig))
+sc <- AddMetaData(sc, sc[[paste0(names(msig), 1:length(names(msig)))]], col.name = names(msig))
+for(i in paste0(names(msig), 1:length(names(msig)))) {
+  sc[[i]] <- NULL
+}
+```
+
+# UMAP clusters
+
+```{r facetted_louvain_clusters_UMAP, fig.height=6}
+if (params$sc.transform) {
+  grouping <- "SCT_snn_res.0.25"; p1 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping) 
+  grouping <- "SCT_snn_res.0.5"; p2 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "SCT_snn_res.0.75"; p3 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "SCT_snn_res.1"; p4 <-DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "SCT_snn_res.1.25"; p5 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "SCT_snn_res.1.5"; p6 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+} else {
+  grouping <- "RNA_snn_res.0.25"; p1 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping) 
+  grouping <- "RNA_snn_res.0.5"; p2 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "RNA_snn_res.0.75"; p3 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "RNA_snn_res.1"; p4 <-DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "RNA_snn_res.1.25"; p5 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+  grouping <- "RNA_snn_res.1.5"; p6 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+}
+CombinePlots(plots = list(p1, p2, p3, p4, p5, p6))
+ggsave(paste0(plots_path, "rdim.clust.pdf"), width = 10, height = 7)
+```
+
+```{r facetted_louvain_clusters_UMAPw_CCregress, fig.height=6}
+grouping <- "CCregress_res.0.1"; p00 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping) 
+grouping <- "CCregress_res.0.15"; p01 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping) 
+grouping <- "CCregress_res.0.2"; p02 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping)
+grouping <- "CCregress_res.0.25"; p1 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping) 
+grouping <- "CCregress_res.0.5"; p2 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping)
+grouping <- "CCregress_res.0.75"; p000 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping) 
+# grouping <- "Harmony_res.0.75"; p3 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title = grouping)
+
+CombinePlots(plots = list(p00, p01, p02, p1, p2, p000))
+ggsave(paste0(plots_path, "UMAP.clust2.pdf"), width = 10, height = 7)
+```
+
+# UMAP pre-selected features
+
+```{r pre_selected_marker_genes_UMAP,  fig.height=18}
+interesting_feats <- c("nFeature_RNA", "nCount_RNA", "percent.mito", paste0("PC_", 1:10), paste0(names(msig), 1:length(msig)), interesting_genes)
+plots <- FeaturePlot(sc, features = interesting_feats, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F)
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, axis.text.y = blank, 
+            axis.title.x = blank, axis.title.y = blank,
+            axis.ticks.x = blank, axis.ticks.y = blank)})
+CombinePlots(plots = plots, legend = "bottom", ncol = 6)
+```
+
+
+# Differential expression
+
+Differential expression model: MAST, Finak et al.: 
+https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0844-5 
+
+For a recent comparison on the performance of different methods for single-cell differential expression, see:
+https://www.nature.com/articles/nmeth.4612
+
+ 
+```{r use_seurat, fig.height=15}
+fmas <- function(sc, res) {
+    Idents(sc) <- res
+    file_out <- paste0(calculations_path, res, ".DEG.clusterMarkers.xlsx")
+    seurat.markers <- FindAllMarkers(sc, test.use = "MAST", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, verbose = F)
+    seurat.markers.summary <- as.data.frame(seurat.markers %>% group_by(cluster) %>% dplyr::filter(p_val_adj < 0.05) %>% top_n(20, avg_logFC))
+    openxlsx::write.xlsx(seurat.markers, file_out, zoom = 100, asTable = TRUE, tableStyle = "none", rowNames = F)
+    return(list(all = seurat.markers, top = seurat.markers.summary))
+}
+resDEG <- params$resDEG
+sc.markers.mas.res <- fmas(sc, resDEG)
+saveRDS(sc.markers.mas.res, paste0(rds_path, "sc.markers.mas.", resDEG, ".Rds"))
+
+
+```
+
+Table of top 20 DEG per cluster
+
+```{r}
+sc.markers.mas.res[[2]] %>% dplyr::mutate(cluster = cell_spec(
+    cluster, color = "white", bold = T,
+    background = spec_color(as.numeric(factor(cluster)), end = 0.9, direction = -1)
+  )) %>% kable(escape = F, caption=paste0("Top DEG for clusters at ", resDEG )) %>%   kable_styling() %>%   scroll_box(width = "100%", height = "600px")
+```
+
+
+
+# Heatmap of DEG
+
+Heatmap of top 20 DEG per cluster
+
+The clustering resolution used for differential expression is **`r resDEG`**
+
+```{r heatmap_DEG, eval = T, fig.height=15}
+Idents(sc) <- params$resDEG
+# switch to RNA normalized for heatmap visualization
+if (params$sc.transform) {
+  DefaultAssay(sc) <- "RNA"
+  sc <- NormalizeData(sc)
+  all.genes <- rownames(sc)
+  sc <- ScaleData(sc, features = all.genes, vars.to.regress="percent.mito", verbose = F) # default: only scales var.genes, which misses some in heatmap
+  g <- DoHeatmap(sc, features = sc.markers.mas.res[[2]]$gene) + scale_fill_gradientn(colors = c("blue", "white", "red"))
+  print(g) # only need to use print if you aren't in a top-level statement (e.g. in a function, in an if/else block, etc.)
+  DefaultAssay(sc) <- "SCT"
+} else {
+  g <- DoHeatmap(sc, features = sc.markers.mas.res[[2]]$gene) + scale_fill_gradientn(colors = c("blue", "white", "red"))
+  print(g)
+}
+```
+
+
+```{r save_object}
+saveRDS(sc, paste0(rds_path, "sc.Rds"))
+```
+
+# UMAP of DEG
+
+```{r feat_DEG_UMAP, fig.height=60}
+# when allowing duplicates gives error
+plots <- FeaturePlot(sc, features = unique(sc.markers.mas.res[[2]]$gene), cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F) 
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, axis.text.y = blank, 
+            axis.title.x = blank, axis.title.y = blank,
+            axis.ticks.x = blank, axis.ticks.y = blank)})
+CombinePlots(plots = plots, legend = "bottom", ncol = 6)
+```
+
+
+
+```{r export_spring}
+export.data <- GetAssayData(sc, slot = "counts")
+export.genes <- rownames(sc)
+write.table(as.matrix(export.data), gzfile(paste0(calculations_path, "spring.data.tsv.gz")), sep = "\t", quote = F, col.names = T, row.names = T )
+write.table(export.genes, paste0(calculations_path, "spring.genes.tsv"), sep = "\t", quote = F, col.names = F, row.names = F )
+if (params$sc.transform) {
+meta.subset <- sc[[c("orig.ident", "Phase", "SCT_snn_res.0.05", "SCT_snn_res.0.1", "SCT_snn_res.0.15", "SCT_snn_res.0.2","SCT_snn_res.0.25", "SCT_snn_res.0.5", "SCT_snn_res.0.75", "SCT_snn_res.1",
+"CCregress_res.0.05", "CCregress_res.0.1", "CCregress_res.0.15", "CCregress_res.0.2","CCregress_res.0.25", "CCregress_res.0.5", "CCregress_res.0.75", "CCregress_res.1")]]
+} else {
+  meta.subset <- sc[[c("orig.ident","Phase", "RNA_snn_res.0.25", "RNA_snn_res.0.5", "RNA_snn_res.0.75", "RNA_snn_res.1")]]
+}
+groupings <- t(meta.subset) # select metadata
+meta.continuous <- sc[[paste0(names(msig), 1:length(msig))]]
+custom.color.tracks <- t(meta.continuous)
+write.table(custom.color.tracks, paste0(calculations_path, "spring.custom.color.tracks.csv"), sep = ",", quote = F, col.names = F, row.names = T )
+write.table(groupings, paste0(calculations_path, "spring.groupings.csv"), sep = ",", quote = F, col.names = F, row.names = T )
+
+
+# COMET files
+#comet.raw <- GetAssayData(sc, slot = "count")
+#
+#comet.clus <- sc[[params$resDEG]]
+#write.table(comet.clus, paste0(calculations_path, "comet.cluster.txt"), sep = "\t", quote = F, col.names = F, row.names = T )
+#comet.expr <- as.matrix(export.data[VariableFeatures(sc),])
+#write.table(comet.expr, paste0(calculations_path, "comet.expr.txt"), sep = "\t", quote = F, col.names = NA, row.names = T )
+#comet.coord <- Embeddings(sc, "umap")
+#write.table(comet.coord, paste0(calculations_path, "comet.coord.txt"), sep = "\t", quote = F, col.names = F, row.names = T )
+```
+
+
+```{r eval = F}
+# see mail Kim Thursday, May 14, 2020 at 3:36 PM
+bulk.cd34pos <- readRDS("/restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/GM-KV_CD34P-Bulk-mRNA_filter_3_CCregressed/rds/bulk.cd34pos.Rds")
+gpi80.cd34pos <- readRDS("/restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/GM-KV_CD34P-GPI80P-mRNA_filter_3_CCregressed/rds/gpi80.cd34pos.Rds")
+bulk.cd34pos <- paste0(bulk.cd34pos, "_1")
+gpi80.cd34pos <- paste0(gpi80.cd34pos, "_2")
+
+g <- DimPlot(sc, group.by = "CCregress_res.0.5", label = T) + ggmin::theme_powerpoint()
+ggsave(paste0(plots_path, "UMAP.color.by.CCregress_res.0.5.pdf"), g, width = 8, height = 7)
+
+g <- DimPlot(sc, group.by = "SCT_snn_res.0.5", label = T) + ggmin::theme_powerpoint()
+ggsave(paste0(plots_path, "UMAP.color.by.SCT_snn_res.0.5.pdf"), g, width = 8, height = 7)
+
+g <- DimPlot(sc, group.by = "SCT_snn_res.0.5", label = T, cells.highlight =  c(bulk.cd34pos , gpi80.cd34pos)) + ggmin::theme_powerpoint()
+ggsave(paste0(plots_path, "UMAP.color.by.cd34pos.pdf"), g, width = 8, height = 7)
+
+g <- DimPlot(sc, group.by = "SCT_snn_res.0.5", label = T, cells.highlight =  bulk.cd34pos ) + ggmin::theme_powerpoint()
+ggsave(paste0(plots_path, "UMAP.color.by.cd34pos_subBulk.pdf"), g, width = 8, height = 7)
+
+g <- DimPlot(sc, group.by = "SCT_snn_res.0.5", label = T, cells.highlight =  gpi80.cd34pos ) + ggmin::theme_powerpoint()
+ggsave(paste0(plots_path, "UMAP.color.by.cd34pos_subGpi80.pdf"), g, width = 8, height = 7)
+
+fmas.pair <- function(sc, res, id1, id2, subsets = NULL, suffix) {
+    file_out <- paste0(calculations_path, suffix, ".xlsx")
+    seurat.markers <- FindMarkers(sc, test.use = "MAST", only.pos = FALSE, min.pct = 0.10, logfc.threshold = 0.10, verbose = F, group.by = res,  ident.1 = id1, ident.2 = id2, subset.ident = subsets)
+    seurat.markers.summary <- as.data.frame(seurat.markers) %>%  rownames_to_column('gene') %>% dplyr::filter(p_val_adj < 0.05) %>% dplyr::arrange(desc(avg_logFC)) %>% dplyr::filter(row_number() %in% 1:20 | row_number() %in% (n()-19):n())
+    openxlsx::write.xlsx(seurat.markers, file_out, zoom = 100, asTable = TRUE, tableStyle = "none", rowNames = T)
+    return(list(all = seurat.markers, top = seurat.markers.summary))
+}
+
+table(sc$orig.ident)
+sc.cd34pos <- subset(sc, cells = c(bulk.cd34pos , gpi80.cd34pos))
+mas1 <- fmas.pair(sc.cd34pos , "orig.ident", id1 = "GM-KV_CD34P-GPI80P-mRNA", id2 = "GM-KV_CD34P-Bulk-mRNA",  suffix = "DEG.ONLY_CD34POS_GPI80_vs_BULK")
+
+sc.cd34pos <- subset(sc, cells = c(bulk.cd34pos , gpi80.cd34pos))
+sc$cd34pos <- colnames(sc) %in% c(bulk.cd34pos , gpi80.cd34pos)
+sc$cd34pos.orig <- paste0(sc$orig.ident, sc$cd34pos)
+table(sc$cd34pos.orig)
+mas2 <- fmas.pair(sc , "cd34pos.orig", id1 = "GM-KV_CD34P-GPI80P-mRNATRUE", id2 = c("GM-KV_CD34P-Bulk-mRNATRUE", "GM-KV_CD34P-Bulk-mRNAFALSE"),  suffix =  "DEG.CD34POS_GPI80_vs_ALL_BULK")
+
+saveRDS(mas1, paste0(rds_path, "mas1.DEG.Rds"))
+saveRDS(mas2, paste0(rds_path, "mas2.DEG.Rds"))
+
+```

@@ -1,0 +1,602 @@
+---
+title: "Analysis 10X dataset"
+output: 
+  html_document:
+    fig_caption: yes
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: cerulean
+editor_options: 
+  chunk_output_type: console
+params:
+  prefix: "FH_CBRA-F210DCRIY"
+  resDEG: "RNA_snn_res.0.25"
+  percent.mito: 0.15
+---
+
+<!-- qrsh -P crem-seq -l h_rt=6:00:00 -pe omp 8 -->
+
+<!-- module load R/3.6.0 -->
+<!-- module load python3/3.6.5 # UMAP -->
+<!-- module load pandoc/2.5 # knitr -->
+
+<!-- R -->
+<!-- Testing: -->
+<!-- params <- list() -->
+<!-- params$prefix <- "FH_BU3NGPT-3D" -->
+<!-- params$resDEG <- "RNA_snn_res.0.25" -->
+<!-- params$percent.mito <- 0.2 -->
+<!-- FH_BU3NGPT-3D -->
+<!-- FH_BU3NGPT-ALI -->
+
+```{r setup, include=FALSE, cache=FALSE}
+library(future)
+plan("multiprocess", workers = 4)
+options(future.globals.maxSize = 8000 * 1024^2)
+
+ifelse(dir.exists("/mnt/scc/project_workspace/"),
+       cremwd <- "/mnt/scc/",
+       cremwd <- "/restricted/projectnb/crem-bioinfo/")
+master_path <- file.path(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/analysis/")
+prefix <- params$prefix
+calculations_path <- paste0(master_path, prefix, "/")
+plots_path <- file.path(calculations_path, "plots/")
+rds_path <- file.path(calculations_path, "rds/")
+cache_path <- file.path(calculations_path, "cache/") # it must end in a slash
+dir.create(rds_path, recursive = T)
+dir.create(plots_path, recursive = T)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE,error = FALSE,warning = FALSE, cache = TRUE, cache.path = cache_path, fig.width=9,fig.height=7, autodep=TRUE, collapse = FALSE, fig.path = plots_path, fig.keep = "all", comment = "##", dev = c("png", "pdf"), cache.lazy = FALSE)
+options(tibble.print_max = 150)
+
+require(tidyverse)
+require(Seurat)
+library(sctransform)
+library(Matrix)
+library(matrixStats) #rowVars
+library("magrittr")
+library("dplyr")
+library("RColorBrewer")
+library(kableExtra)
+library(data.table) # getting counts
+library(knitr)
+```
+
+```{r load_objects, eval=FALSE}
+sc.pre <- readRDS(paste0(rds_path, "sc.prefilt.Rds"))
+sc <- readRDS(paste0(rds_path, "sc.Rds"))
+```
+
+
+# QC filtering
+
+```{r load_sc_qc, fig.height=4}
+sc.counts <-  Read10X(paste0(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/cellranger_count_all3runs/", prefix, "/outs/filtered_feature_bc_matrix"))
+# mouse and human
+sc.counts <- sc.counts[-grep("^mm10_", rownames(sc.counts)),]
+rownames(sc.counts) <- sub("hg19_", "", rownames(sc.counts))
+# head(rownames(sc.counts))
+sc.pre <- CreateSeuratObject(counts = sc.counts, min.cells = 5, min.features = 0, project = prefix)
+# pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+cat("UMI counts per cell")
+summary(apply(GetAssayData(sc.pre, slot = "counts"), 2, sum))
+cat("UMI counts per gene")
+summary(apply(GetAssayData(sc.pre, slot = "counts"), 1, sum))
+# sc.pre <- PercentageFeatureSet(sc.pre, pattern = "^MT-", col.name = "percent.mito") # alternative
+mito.features <- grep(pattern = "^MT-", rownames(sc.pre), value = TRUE)
+percent.mito <- Matrix::colSums(GetAssayData(sc.pre, slot = 'counts')[mito.features, ]) / Matrix::colSums(GetAssayData(sc.pre, slot = 'counts'))
+sc.pre[['percent.mito']] <- percent.mito
+saveRDS(sc.pre, paste0(rds_path, "sc.prefilt.Rds"))
+cat("Before filtering")
+plots <- VlnPlot(sc.pre, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0.1, combine=F)
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, # comment on multisample analyses
+            axis.title.x = blank, axis.title.y = blank)})
+CombinePlots(plots = plots, legend = "none", ncol = 3)
+ggsave(paste0(plots_path, "vln.qc.pre.pdf"))
+sc.pre
+quantile.threshold <- (100 - (dim(sc.pre)[2]/2000)) / 100
+nGene.upper <- quantile(sc.pre$nFeature_RNA, probs = quantile.threshold)
+nUMI.upper <- quantile(sc.pre$nCount_RNA, probs = quantile.threshold)
+# nGene.upper <- 3500
+# nUMI.upper <- 15000
+cat("Doublet nGene threshold: ", nGene.upper)
+cat("Doublet nUMI threshold: ", nUMI.upper)
+keep.cells <- sc.pre[[]] %>% rownames_to_column() %>% dplyr::filter(nFeature_RNA < nGene.upper & nFeature_RNA > 800 & nCount_RNA < nUMI.upper & percent.mito < params$percent.mito) %>% pull(rowname)
+sc <- sc.pre[, keep.cells]
+saveRDS(keep.cells, paste0(rds_path, "keep.cells.Rds"))
+
+cat("After filtering doublets and degraded cells")
+plots <- VlnPlot(sc, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3, pt.size = 0.1, combine = F) 
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, # comment on multisample analyses
+            axis.title.x = blank, axis.title.y = blank)})
+CombinePlots(plots = plots, legend = "none", ncol = 3)
+ggsave(paste0(plots_path, "vln.qc.after.pdf"))
+
+sc
+```
+
+
+```{r interesting_genes}
+interesting_genes <- unique(c("CD34","PROM1","VNN2","ITGA6","THY1","PROCR","CDH5","TEK","CXCR4","CD164","ENG","PTPRC","CD38","CD34","TEK","CLEC1B","ENG","PROCR","FLT4","PECAM1","CD34","GYPA","TFR","HBB","HBG1","HBG2","HBE","HBA","SLC4A1","CD36","GATA1","KLF1","TAL1","THY1", "PTPRC", "ITGA6", "PROM1", "EPCR", "PROCR", "CDH5", "CD144", "TIE2", "CD202b", "VEGFR3", "CLEC2", "GYPA", "CXCR4", "ENG", "THBD"))
+
+cat("Pre-selected genes: ", interesting_genes)
+interesting_genes <- interesting_genes[interesting_genes %in% rownames(sc)]
+cat("Pre-selected genes expressed in current dataset: ", interesting_genes)
+```
+
+# Dimensionality reduction
+
+Regressing out the confounding effect of cell degradation (by modeling the mitochondrial percentage as a latent variable).
+
+```{r dim_red_pca}
+sc <- NormalizeData(sc)
+sc <- FindVariableFeatures(sc)
+# HVFInfo(sc)
+cat("Variable gene selection: ", length(VariableFeatures(sc)))
+all.genes <- rownames(sc)
+sc <- ScaleData(sc, features = all.genes, vars.to.regress="percent.mito", display.progress = F, do.par = T) # default: only scales var.genes, which misses some in heatmap
+
+sc <- RunPCA(sc, features = VariableFeatures(sc), verbose = F)
+sc <- ProjectDim(sc, verbose = F)
+print(x = sc[['pca']], dims = 1:5, nfeatures = 5, projected = FALSE)
+
+ElbowPlot(sc)
+ggsave(paste0(plots_path, "elbow.pdf"))
+DimPlot(sc, reduction = "pca")
+```
+
+These are the genes driving the first 9 principal components
+
+```{r dim_heatmap, fig.height=11}
+DimHeatmap(sc, dims = 1:9, cells = 500, balanced = TRUE)
+```
+
+
+# Clustering
+
+Use tSNE and UMAP for non-linear dimensionality reduction
+
+Use Louvain algorithm for community detection.
+
+```{r cluster_and_rdim, eval=TRUE, results=FALSE}
+sc <- FindNeighbors(sc, dims = 1:20)
+sc <- FindClusters(sc, resolution = seq(1.5, 0.25, -0.25)) # reverse order, seurat_clusters takes last run's value
+sc <- RunTSNE(sc, dims = 1:20)
+sc <- RunUMAP(sc, dims = 1:20)
+# Idents(sc) <- "orig.ident"
+```
+
+Non-linear dimensionality reduction with tSNE and UMAP
+
+```{r plot_rdim}
+plot1 <- DimPlot(sc, reduction = "tsne") + theme_void() + labs(title ="tSNE")
+plot2 <- DimPlot(sc, reduction = "umap") + theme_void() + labs(title ="UMAP")
+CombinePlots(plots = list(plot1, plot2), legend = 'right')
+ggsave(paste0(plots_path, "rdim.pdf"), width = 7, height = 3)
+```
+
+Number of cells per cluster at different Louvain resolutions:
+
+```{r}
+table(sc$RNA_snn_res.1.5)
+table(sc$RNA_snn_res.1.25)
+table(sc$RNA_snn_res.0.75)
+table(sc$RNA_snn_res.0.5)
+table(sc$RNA_snn_res.0.25)
+table(sc$seurat_clusters)
+# table(sc$orig.ident)
+```
+
+# Cell-cycle stage classification
+
+Score G1, G2/M and S signatures in each cell.
+
+Classify phase based on that score.
+
+```{r CC_regression, eval=TRUE}
+# cc.genes is preloaded with Seurat
+# cc.genes <- readLines(con = paste0(cremwd, "/reference_data/gene_sets/regev_lab_cell_cycle_genes.txt"))
+# s.genes <- cc.genes[1:43]
+# g2m.genes <- cc.genes[44:97]
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+sc <- CellCycleScoring(sc, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+# head(sc[[]])
+grouping <- "Phase"; DimPlot(sc, reduction.use = "umap", group.by =  grouping, pt.size = 2) + NoAxes()
+
+kable(table(sc$Phase, sc$RNA_snn_res.0.25), caption="Cell cycle stage classification per cluster") %>%   kable_styling() %>%   scroll_box(width = "100%", height = "200px")
+```
+
+# Molecular Signatures scoring
+
+Compute enrichment for molecular signatures using method from Tirosh et al, Science (2016)
+
+```{r mol_sig_score, fig.height=11}
+msig <- read_csv(paste0(cremwd, "/reference_data/gene_sets/kim.citeseq.20190826.csv"), comment = "#", col_names = FALSE)
+msig <- split(msig$X1, msig$X2)
+
+sc <- AddModuleScore(sc, features = msig, name = names(msig))
+```
+# ADT data
+
+```{r add_ADT}
+# Load in the ADT UMI matrix
+adt.prefix <- sub("-mRNA", "", prefix)
+mat <- readMM(file = paste0(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/CITE-count-seq/", adt.prefix, "/umi_count/matrix.mtx.gz"))
+feature.names = read.delim(paste0(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/CITE-count-seq/", adt.prefix, "/umi_count/features.tsv.gz"), header = FALSE, stringsAsFactors = FALSE)
+barcode.names = read.delim(paste0(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/CITE-count-seq/", adt.prefix, "/umi_count/barcodes.tsv.gz"), header = FALSE, stringsAsFactors = FALSE)
+colnames(mat) = barcode.names$V1
+rownames(mat) = sub("-.*$","", feature.names$V1)
+sc.adt <- mat
+sc.adt <- sc.adt[, colnames(sc)]
+sc[["ADT"]] <- CreateAssayObject(counts = sc.adt)
+plan("sequential")
+sc <- NormalizeData(sc, assay = "ADT", normalization.method = "CLR")
+sc <- ScaleData(sc, assay = "ADT")
+```
+
+```{r eda_ADT, fig.height=18}
+tmat <- as.data.frame(t(as.matrix(mat)))
+mtmat <- reshape2::melt(tmat)
+head(mtmat)
+table(mtmat$variable)
+# mtmat$variable <- sub("-.*$","", mtmat$variable)
+ggplot(mtmat, aes(value)) + geom_histogram(binwidth=10) + coord_cartesian(xlim = c(0, 1000)) + facet_grid(variable ~ .)
+# ggsave("/restricted/projectnb/crem-bioinfo/project_workspace/hist.pdf", height=12)
+
+tmat$unmapped <- NULL
+tmat$sum <- rowSums(tmat)
+ggplot(tmat, aes(sum)) + geom_histogram(binwidth=20)
+# ggsave("/restricted/projectnb/crem-bioinfo/project_workspace/hist.sum.pdf", height=5)
+summary(tmat$sum)
+
+# library(GGally)
+# test <- tmat %>%  ggpairs(., cardinality_threshold = 20)
+# ggsave("/restricted/projectnb/crem-bioinfo/project_workspace/eda.pairs.pdf", test, height=15, width =15)
+```
+
+
+```{r}
+adts <- c("adt_CD34","adt_CD38","adt_CD90","adt_CD45","adt_CD49f","adt_CD133","adt_CD201","adt_VECAD","adt_TEK","adt_FLT4","adt_CLEC1B","adt_CD235a", "adt_CD184","adt_HLA","adt_Pan","adt_CD141","adt_ENG","adt_CD164","adt_CD31")
+plots <- FeaturePlot(sc, features = adts, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F)
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, axis.text.y = blank, 
+            axis.title.x = blank, axis.title.y = blank,
+            axis.ticks.x = blank, axis.ticks.y = blank)})
+CombinePlots(plots = plots, legend = "bottom", ncol = 4)
+
+
+```
+
+# UMAP clusters
+
+```{r facetted_louvain_clusters_UMAP, fig.height=6}
+# library(gridExtra)
+
+grouping <- "RNA_snn_res.0.25"; p1 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping) 
+grouping <- "RNA_snn_res.0.5"; p2 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+grouping <- "RNA_snn_res.0.75"; p3 <- DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+grouping <- "RNA_snn_res.1"; p4 <-DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+grouping <- "RNA_snn_res.1.25"; p5 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+grouping <- "RNA_snn_res.1.5"; p6 <-  DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 2) + theme_void() + labs(title = grouping)
+
+# grid.arrange(p1, p2, p3, p4, p5, p6, ncol=3)
+CombinePlots(plots = list(p1, p2, p3, p4, p5, p6))
+ggsave(paste0(plots_path, "rdim.clust.pdf"), width = 10, height = 7)
+
+```
+
+
+# UMAP pre-selected features
+
+```{r pre_selected_marker_genes_UMAP,  fig.height=18}
+interesting_feats <- c("nFeature_RNA", "nCount_RNA", "percent.mito", paste0("PC_", 1:10), paste0(names(msig), 1:length(msig)), interesting_genes)
+plots <- FeaturePlot(sc, features = interesting_feats, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F)
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, axis.text.y = blank, 
+            axis.title.x = blank, axis.title.y = blank,
+            axis.ticks.x = blank, axis.ticks.y = blank)})
+CombinePlots(plots = plots, legend = "bottom", ncol = 6)
+```
+
+
+# Differential expression
+
+Differential expression model: MAST, Finak et al.: 
+https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0844-5 
+
+For a recent comparison on the performance of different methods for single-cell differential expression, see:
+https://www.nature.com/articles/nmeth.4612
+
+ 
+```{r use_seurat, eval=TRUE, fig.height=15}
+fmas <- function(sc, res) {
+    Idents(sc) <- res
+    file_out <- paste0(calculations_path, res, ".DEG.clusterMarkers.xlsx")
+    seurat.markers <- FindAllMarkers(sc, test.use = "MAST", only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, verbose = F)
+    seurat.markers.summary <- as.data.frame(seurat.markers %>% group_by(cluster) %>% dplyr::filter(p_val_adj < 0.05) %>% top_n(10, abs(avg_logFC)))
+    openxlsx::write.xlsx(seurat.markers, file_out, zoom = 100, asTable = TRUE, tableStyle = "none", rowNames = F)
+    return(list(all = seurat.markers, top = seurat.markers.summary))
+}
+resDEG <- params$resDEG
+sc.markers.mas.res <- fmas(sc, resDEG)
+saveRDS(sc.markers.mas.res, paste0(rds_path, "sc.markers.mas.", resDEG, ".Rds"))
+
+sc.markers.mas.res2 <- fmas(sc, "RNA_snn_res.0.5")
+saveRDS(sc.markers.mas.res2, paste0(rds_path, "sc.markers.mas.", "RNA_snn_res.0.5", ".Rds"))
+```
+
+Table of top 20 DEG per cluster
+
+```{r}
+sc.markers.mas.res[[2]] %>% dplyr::mutate(cluster = cell_spec(
+    cluster, color = "white", bold = T,
+    background = spec_color(as.numeric(factor(cluster)), end = 0.9, direction = -1)
+  )) %>% kable(escape = F, caption=paste0("Top DEG for clusters at ", resDEG )) %>%   kable_styling() %>%   scroll_box(width = "100%", height = "600px")
+```
+
+
+# Heatmap of DEG
+
+Heatmap of top 20 DEG per cluster
+
+```{r heatmap_DEG, fig.height=15}
+Idents(sc) <- resDEG
+DoHeatmap(sc, features = sc.markers.mas.res[[2]]$gene) + scale_fill_gradientn(colors = c("blue", "white", "red"))
+```
+
+```{r eval= FALSE}
+experiment.aggregate <- BuildClusterTree(
+  experiment.aggregate,
+  pcs.use = use.pcs,
+  do.reorder = F,
+  reorder.numeric = F,
+  do.plot=F)
+PlotClusterTree(experiment.aggregate)
+ColorTSNESplit(experiment.aggregate, node = 30)
+
+```
+
+# UMAP of DEG
+
+```{r feat_DEG_UMAP, fig.height=50, eval = TRUE, error=TRUE}
+plots <- FeaturePlot(sc, features = sc.markers.mas.res[[2]]$gene, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F) 
+plots <- lapply(X = plots, FUN = function(p) {
+  blank <- element_blank()
+  p + theme(axis.line.x = blank, axis.line.y = blank,
+            axis.text.x = blank, axis.text.y = blank, 
+            axis.title.x = blank, axis.title.y = blank,
+            axis.ticks.x = blank, axis.ticks.y = blank)})
+CombinePlots(plots = plots, legend = "bottom", ncol = 6)
+```
+
+
+```{r save_object}
+saveRDS(sc, paste0(rds_path, "sc.Rds"))
+```
+
+
+```{r export_spring, eval=TRUE}
+export.data <- GetAssayData(sc, slot = "data")
+export.genes <- rownames(sc)
+write.table(as.matrix(export.data), gzfile(paste0(calculations_path, "spring.data.tsv.gz")), sep = "\t", quote = F, col.names = T, row.names = T )
+write.table(export.genes, paste0(calculations_path, "spring.genes.tsv"), sep = "\t", quote = F, col.names = F, row.names = F )
+meta.subset <- sc[[c("Phase", "RNA_snn_res.0.25", "RNA_snn_res.0.5", "RNA_snn_res.0.75", "RNA_snn_res.1")]]
+groupings <- t(meta.subset) # select metadata
+meta.continuous <- sc[[paste0(names(msig), 1:length(msig))]]
+
+table(rownames(meta.continuous) == rownames(FetchData(sc, adts)))
+meta.continuous <- data.frame(meta.continuous, FetchData(sc, adts))  # pull out ADT data
+
+custom.color.tracks <- t(meta.continuous)
+write.table(custom.color.tracks, paste0(calculations_path, "spring.custom.color.tracks.csv"), sep = ",", quote = F, col.names = F, row.names = T )
+write.table(groupings, paste0(calculations_path, "spring.groupings.csv"), sep = ",", quote = F, col.names = F, row.names = T )
+
+# COMET files
+comet.clus <- sc[[params$resDEG]]
+write.table(comet.clus, paste0(calculations_path, "comet.cluster.txt"), sep = "\t", quote = F, col.names = F, row.names = T )
+comet.expr <- as.matrix(export.data[VariableFeatures(sc),])
+write.table(comet.expr, paste0(calculations_path, "comet.expr.txt"), sep = "\t", quote = F, col.names = NA, row.names = T )
+comet.coord <- Embeddings(sc, "umap")
+write.table(comet.coord, paste0(calculations_path, "comet.coord.txt"), sep = "\t", quote = F, col.names = F, row.names = T )
+
+# spring server: 
+# lentibarcode
+# dkottonlab!
+# https://kleintools.hms.harvard.edu/tools/springViewer_1_6_dev.html?client_datasets/lentibarcode/lentibarcode
+```
+
+```{r violin, fig.width=9,fig.height=7, eval=F}
+
+panel.genes <- c("CD34","CD38","THY1","PTPRC","ITGA6","PROM1","PROCR","CDH5","TEK","FLT4","CLEC1B","GYPA","CXCR4","HLA-A","HLA-B","HLA-C","HLA-E","HLA-F","HLA-G","HLA-H","HLA-J","HLA-K","HLA-L","HLA-N","HLA-P","HLA-S","HLA-T","HLA-U","HLA-V","HLA-W","HLA-X","HLA-Y","HLA-Z","HLA-DMA","HLA-DMB","HLA-DOA","HLA-DOB","HLA-DPA1","HLA-DPA2","HLA-DPA3","HLA-DPB1","HLA_DPB2","HLA-DQA1","HLA-DQA2","HLA-DQB1","HLA-DQB2","HLA-DQB3","HLA-DRA","HLA-DRB1","HLA-DRB2","HLA-DRB3","HLA-DRB4","HLA-DRB5","HLA-DRB6","HLA-DRB7","HLA-DRB8","HLA-DRB9","THBD","ENG","CD164","PECAM1")
+adts <- c("adt_CD34","adt_CD38","adt_CD90","adt_CD45","adt_CD49f","adt_CD133","adt_CD201","adt_VECAD","adt_TEK","adt_FLT4","adt_CLEC1B","adt_CD235a", "adt_CD184","adt_HLA","adt_Pan","adt_CD141","adt_ENG","adt_CD164","adt_CD31")
+
+
+plot.umap.RNA.feat <- function(feat) {
+  if (feat %in% rownames(sc@assays$RNA@data)) {
+      FeaturePlot(sc, features = feat, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".pdf"), width = 6, height = 6)
+  }
+}
+sapply(panel.genes, plot.umap.RNA.feat)
+
+plot.umap.ADT.feat <- function(feat) {
+      FeaturePlot(sc, features = feat, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".pdf"), width = 6, height = 6)
+}
+sapply(adts, plot.umap.ADT.feat)
+ 
+```
+
+```{r quantile_scale, fig.width=9,fig.height=7, eval=T}
+
+panel.genes <- c("CD34","CD38","THY1","PTPRC","ITGA6","PROM1","PROCR","CDH5","TEK","FLT4","CLEC1B","GYPA","CXCR4","HLA-A","HLA-B","HLA-C","HLA-E","HLA-F","HLA-G","HLA-H","HLA-J","HLA-K","HLA-L","HLA-N","HLA-P","HLA-S","HLA-T","HLA-U","HLA-V","HLA-W","HLA-X","HLA-Y","HLA-Z","HLA-DMA","HLA-DMB","HLA-DOA","HLA-DOB","HLA-DPA1","HLA-DPA2","HLA-DPA3","HLA-DPB1","HLA_DPB2","HLA-DQA1","HLA-DQA2","HLA-DQB1","HLA-DQB2","HLA-DQB3","HLA-DRA","HLA-DRB1","HLA-DRB2","HLA-DRB3","HLA-DRB4","HLA-DRB5","HLA-DRB6","HLA-DRB7","HLA-DRB8","HLA-DRB9","THBD","ENG","CD164","PECAM1")
+adts <- c("adt_CD34","adt_CD38","adt_CD90","adt_CD45","adt_CD49f","adt_CD133","adt_CD201","adt_VECAD","adt_TEK","adt_FLT4","adt_CLEC1B","adt_CD235a", "adt_CD184","adt_HLA","adt_Pan","adt_CD141","adt_ENG","adt_CD164","adt_CD31")
+
+plot.umap.RNA.feat.q <- function(feat) {
+  if (feat %in% rownames(sc@assays$RNA@data)) {
+      FeaturePlot(sc, features = feat, cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", pt.size = 1,  combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaled.pdf"), width = 6, height = 6)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaled.png"), width = 6, height = 6)
+  }
+}
+sapply(panel.genes, plot.umap.RNA.feat.q)
+
+plot.umap.ADT.feat.q <- function(feat) {
+      FeaturePlot(sc, features = feat, cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", pt.size = 1,  combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaled.pdf"), width = 6, height = 6)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaled.png"), width = 6, height = 6)
+}
+sapply(adts, plot.umap.ADT.feat.q)
+```
+
+
+```{r featsabs, fig.width=9,fig.height=7, eval=F}
+
+plot.umap.RNA.feat.abs <- function(feat) {
+  if (feat %in% rownames(sc@assays$RNA@data)) {
+      FeaturePlot(sc, features = feat, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, max.cutoff = 5, combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaleMaxAbsoluteThres.pdf"), width = 6, height = 6)
+  }
+}
+sapply(panel.genes, plot.umap.RNA.feat.abs)
+
+plot.umap.ADT.feat.abs <- function(feat) {
+      FeaturePlot(sc, features = feat, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, max.cutoff = 5, combine=F)
+      ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaleMaxAbsoluteThres.pdf"), width = 6, height = 6)
+}
+sapply(adts, plot.umap.ADT.feat.abs)
+```
+
+```{r featscatter, fig.width=9,fig.height=7, eval=F}
+plot.umap.scatter <- function(feat) {
+  FeatureScatter(sc, feature1 = feat, feature2 = "nFeature_RNA")
+  ggsave(paste0(plots_path, "scatter.plot.", feat, ".nGenes.pdf"), width = 6, height = 6)
+  FeatureScatter(sc, feature1 = feat, feature2 = "nCount_ADT")
+  ggsave(paste0(plots_path, "scatter.plot.", feat, ".nADTcounts.pdf"), width = 6, height = 6)
+  FeatureScatter(sc, feature1 = feat, feature2 = "nCount_RNA")
+  ggsave(paste0(plots_path, "scatter.plot.", feat, ".nRNAcounts.pdf"), width = 6, height = 6)
+  FeatureScatter(sc, feature1 = feat, feature2 = "percent.mito")
+  ggsave(paste0(plots_path, "scatter.plot.", feat, ".percent.mito.pdf"), width = 6, height = 6)
+}
+sapply(adts, plot.umap.scatter)
+
+```
+
+```{r feat_reduce_size, fig.width=9,fig.height=7, eval=F}
+
+ifelse(dir.exists("/mnt/scc/project_workspace/"),
+       cremwd <- "/mnt/scc/",
+       cremwd <- "/restricted/projectnb/crem-bioinfo/")
+master_path <- file.path(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/analysis/")
+panel.genes.subset <- c("CD34","THY1","ITGA6","PTPRC","PROM1","PROCR","CD164","ENG","CDH5","TEK","CLEC1B","FLT4","GYPA","CXCR4","THBD","CD38")
+adts.subset <- c("adt_CD34","adt_CD90","adt_CD49f","adt_CD45","adt_CD133","adt_CD201","adt_CD164","adt_ENG","adt_VECAD","adt_TEK","adt_CLEC1B","adt_FLT4","adt_CD235a","adt_CD184","adt_CD141","adt_CD38")
+library(Seurat)
+plotter.f <- function(prefix) {
+    calculations_path <- paste0(master_path, prefix, "/")
+    plots_path <- file.path(calculations_path, "plots/")
+    rds_path <- file.path(calculations_path, "rds/")
+    sc <- readRDS(paste0(rds_path, "sc.Rds"))
+    pdf(paste0(plots_path, "feature.plot.all.scaled.col2.pdf"), width = 80, height = 10)  # BEST: adapts scale
+    FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", ncol = 16)
+    dev.off()
+    png(paste0(plots_path, "feature.plot.all.scaled.col2.png"), units = "in", res = 150, width = 80, height = 10)  # BEST: adapts scale
+    FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", ncol = 16)
+    dev.off()
+}
+prefs <- c("GM-KV_CD34N-CD235AN-mRNA","GM-KV_CD34N-CD235AP-mRNA","GM-KV_CD34P-Bulk-mRNA","GM-KV_CD34P-GPI80P-mRNA")
+sapply(prefs, plotter.f)
+
+
+
+
+# plot.umap.ADT.feat.q <- function(feat) {
+#       FeaturePlot(sc, features = feat, cols = c("#f0f0f0", brewer.pal(9,"OrRd")), pt.size = 1, max.cutoff = "q99", combine=F)
+#       ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaleMaxQ99.pdf"), width = 6, height = 6)
+# }
+# sapply(adts, plot.umap.ADT.feat.q)
+
+# pdf(paste0(plots_path, "feature.plot.all.colScaleMaxQ99.pdf"), width = 80, height = 10)
+# FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), max.cutoff = "q99", ncol = 16)
+# dev.off()
+# pdf(paste0(plots_path, "feature.plot.all.col2.pdf"), width = 80, height = 10)  
+# FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), ncol = 16)
+# dev.off()
+pdf(paste0(plots_path, "feature.plot.all.scaled.col2.pdf"), width = 80, height = 10)  # BEST: adapts scale
+FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", ncol = 16)
+dev.off()
+png(paste0(plots_path, "feature.plot.all.scaled.col2.png"), units = "in", res = 150, width = 80, height = 10)  # BEST: adapts scale
+FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", ncol = 16)
+dev.off()
+# ggsave(paste0(plots_path, "feature.plot.", feat, ".colScaleMaxQ99.pdf"), width = 80, height = 5, p)
+# pdf(paste0(plots_path, "feature.plot.all.colScaleMaxQ99.col2.Raster.pdf"), width = 300, height = 30)  # BEST: adapts scale
+# AugmentPlot(FeaturePlot(sc, features = c(panel.genes.subset, adts.subset), cols = c("lightgrey", "#7F0000"), max.cutoff = "q99", ncol = 16))
+# dev.off()
+
+```
+
+```{r}
+grouping <- "RNA_snn_res.0.5"; DimPlot(sc, group.by =  grouping, plot.title= grouping, pt.size = 1) + theme_void() + labs(title ="UMAP")
+ggsave(paste0(plots_path, "rdim.res.0.5.pdf"), width = 6, height = 6)
+ggsave(paste0(plots_path, "rdim.res.0.5.png"), width = 6, height = 6)
+
+```
+
+
+```{r featscatter_2, fig.width=9,fig.height=7, eval=F}
+FeatureScatter(sc, feature1 = "TNFRSF12A", feature2 = "CD69")
+ggsave(paste0(plots_path, "scatter.plot.TNFRSF12A.CD69.pdf"), width = 6, height = 6)
+FeatureScatter(sc, feature1 = "TNFRSF12A", feature2 = "CD69", slot = "scale.data")
+ggsave(paste0(plots_path, "scatter.plot.TNFRSF12A.CD69.counts.pdf"), width = 6, height = 6)
+```
+
+
+```{r featscatter3, eval=F}
+params <- list()
+params$prefix <- "GM-KV_CD34P-GPI80P-mRNA"
+params$resDEG <- "RNA_snn_res.0.5"
+params$percent.mito <- 0.25
+ifelse(dir.exists("/mnt/scc/project_workspace/"),
+       cremwd <- "/mnt/scc/",
+       cremwd <- "/restricted/projectnb/crem-bioinfo/")
+master_path <- file.path(cremwd, "/project_workspace/19_06_24_kim_citeseq/calculations/analysis/")
+prefix <- params$prefix
+calculations_path <- paste0(master_path, prefix, "/")
+plots_path <- file.path(calculations_path, "plots/")
+rds_path <- file.path(calculations_path, "rds/")
+cache_path <- file.path(calculations_path, "cache/") # it must end in a slash
+library(tidyverse)
+library(Seurat)
+library(sctransform)
+library(Matrix)
+library(matrixStats) #rowVars
+library(magrittr)
+library(dplyr)
+library(RColorBrewer)
+library(data.table) # getting counts
+sc.pre <- readRDS(paste0(master_path, prefix, "_mouse_2/rds/sc.prefilt.Rds")) # get prefilt data w/mouse
+sc.pre[["percent.human"]] <- PercentageFeatureSet(sc.pre, pattern = "^hg19-")
+sc.pre[["percent.mouse"]] <- PercentageFeatureSet(sc.pre, pattern = "^mm10-")
+human.features <- grep(pattern = "^hg19-", rownames(sc.pre), value = TRUE)
+mouse.features <- grep(pattern = "^mm10-", rownames(sc.pre), value = TRUE)
+count.human <- Matrix::colSums(GetAssayData(sc.pre, slot = 'counts')[human.features , ]) 
+count.mouse <- Matrix::colSums(GetAssayData(sc.pre, slot = 'counts')[mouse.features , ]) 
+sc.pre[["total.human"]] <- count.human
+sc.pre[["total.mouse"]] <- count.mouse
+
+```
+
+
