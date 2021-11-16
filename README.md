@@ -80,20 +80,6 @@ pre=`basename $f`
 zcat /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/cellranger_count_all3runs/$pre/outs/filtered_feature_bc_matrix/barcodes.tsv.gz | cut -f 1 -d "-"  > /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/CITE-count-seq/${pre}.wl
 done
 
-# Questions
-
-
-# Pending:
-FeaturePlot: formatted RNA and ADT levels of genes that were targetted in ADTs (list will be supplied by Kim) in combined analysis
-COMET results
-Add ADT levels to SPRING annotations
-Distribution of ADTs re-formatted: histograms w/ limit of x-axis at 1000
-Re-draw feature plots with color scale limits at  max.cutoff = "q80"
-
-Re-analysis w/ mouse data:
-    what's the background noise of ADTs in mouse?
-    How similar is endothelial cluster
-POSTPONE: In GPI80P sample, regressing out any cell cycle differences -> keep previous cluster annotation, to be able to visualize them
 
 # For COMET (selection of marker combinations):
 module load python3
@@ -147,65 +133,6 @@ GM-KV_CD34P-GPI80P/run_report.yaml:Percentage mapped: 93
 GM-KV_CD34P-GPI80P/run_report.yaml:     Expected cells: 8129
 
 cell bc  1-16     UMI 17-26
-GTCCACTCATTGCCTC TTAGAGTTTT AA
-
-
-TCATGCCGTAGCTTGT GGGTGCTGGC CT
-
-
-GTTTCCTTGACCA NNTAAAAAANNNAAAAAAANNNAAAAAANNNAACAAAANNNAAAAAAANNNAAAAAGTNTAGGGGGNNNNGGGGGGGN
-
-## SPRING plots
-cvmar
-└── 19_06_24_kim_citeseq
-    ├── GM-KV_CD34N-CD235AN-mRNA
-    │   ├── cellranger.mRNA.summary
-    │   │   └── web_summary.html
-    │   ├── processed.seurat.ADT.mRNA.object
-    │   │   └── sc.Rds
-    │   └── raw.data
-    │       ├── antibody
-    │       │   ├── barcodes.tsv.gz
-    │       │   ├── features.tsv.gz
-    │       │   └── matrix.mtx.gz
-    │       └── mRNA
-    │           └── filtered_feature_bc_matrix.h5
-    ├── GM-KV_CD34N-CD235AP-mRNA
-    │   ├── cellranger.mRNA.summary
-    │   │   └── web_summary.html
-    │   ├── processed.seurat.ADT.mRNA.object
-    │   │   └── sc.Rds
-    │   └── raw.data
-    │       ├── antibody
-    │       │   ├── barcodes.tsv.gz
-    │       │   ├── features.tsv.gz
-    │       │   └── matrix.mtx.gz
-    │       └── mRNA
-    │           └── filtered_feature_bc_matrix.h5
-    ├── GM-KV_CD34P-Bulk-mRNA
-    │   ├── cellranger.mRNA.summary
-    │   │   └── web_summary.html
-    │   ├── processed.seurat.ADT.mRNA.object
-    │   │   └── sc.Rds
-    │   └── raw.data
-    │       ├── antibody
-    │       │   ├── barcodes.tsv.gz
-    │       │   ├── features.tsv.gz
-    │       │   └── matrix.mtx.gz
-    │       └── mRNA
-    │           └── filtered_feature_bc_matrix.h5
-    └── GM-KV_CD34P-GPI80P-mRNA
-        ├── cellranger.mRNA.summary
-        │   └── web_summary.html
-        ├── processed.seurat.ADT.mRNA.object
-        │   └── sc.Rds
-        └── raw.data
-            ├── antibody
-            │   ├── barcodes.tsv.gz
-            │   ├── features.tsv.gz
-            │   └── matrix.mtx.gz
-            └── mRNA
-                └── filtered_feature_bc_matrix.h5
 
 
 # RunALRA() seurat imputation
@@ -224,13 +151,6 @@ CD34N-CD235AP 3645
 CD34P-Bulk  8739
 CD34P-GPI80P  7237
 
-
-# requests
-1. new annot column grouping some clusters as per email in certain samples
-2. for analysis of 2samples: import CCregress_res.0.15 column from individual CCregress analyses, then DEG between CD34+bulk (@0.15 res w/o #2,#3,#4,#5; keep only #0 and #1) and GPI-80 (@0.15 res w/o #3,#4)
-3. new VlnPlots of  ITGA6, PROCR, PROM1, CD164, MLLT3, HLF, HMGA2, LMO2 for bulk vs gpi80, and also for the subsetted bulk vs gpi80 (see above)
-
-10.48.225.54:152.0
 
 
 # UMAP.combined.updated.plots.Rmd
@@ -497,10 +417,10 @@ CD34P-GPI80P  7237
         + heatmap_pseudotime_lymphoid_B_genes.pdf (1,2)
         + heatmap_pseudotime_lymphoid_T_NK_genes.pdf (1,2)
         + heatmap_pseudotime_myeloid_genes.pdf (1,2)
-    Google Drive Location: 
-        + (1): https://drive.google.com/drive/folders/1Gp2q4DVTyyu_6YcvjHs2YKihBIIwzXaI 
-        + (2): https://drive.google.com/drive/folders/1ncVDr400-KbLyR0jxe8WwWEnNgkQWcVa 
-        + Other Objects: https://drive.google.com/drive/folders/1mPF8XyVD4jLIfBoE6w8yWxc7yq5-9_fh 
+
+# GEO
+
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE160251
 
 
 
