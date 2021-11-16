@@ -80,76 +80,8 @@ pre=`basename $f`
 zcat /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/cellranger_count_all3runs/$pre/outs/filtered_feature_bc_matrix/barcodes.tsv.gz | cut -f 1 -d "-"  > /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/CITE-count-seq/${pre}.wl
 done
 
-
-# For COMET (selection of marker combinations):
-module load python3
-# pip install COMETSC --user 
-/usr3/bustaff/cvmar/.local/bin/Comet -h
-
-/restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/merged.sctransform.2samples
-/usr3/bustaff/cvmar/.local/bin/Comet -C 16 comet.expr.txt comet.coord.txt comet.cluster.txt /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/merged.sctransform.2samples/comet
-
-/restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/merged.sctransform.2samples
-/usr3/bustaff/cvmar/.local/bin/Comet -C 16 comet.expr.txt comet.coord.txt comet.cluster.txt /restricted/projectnb/crem-bioinfo/project_workspace/19_06_24_kim_citeseq/calculations/analysis/merged.sctransform.2samples/comet_
-
-Hypergeometric marker detection. Finds markers identifying a cluster.
-Documentation available at https://hgmd.readthedocs.io/en/latest/index.html
-
-positional arguments:
-  marker              Marker file input
-  vis                 vis file input
-  cluster             Cluster file input
-  output_path         the output directory where output files should go
-
-optional arguments:
-  -h, --help          show this help message and exit
-  -g [G]              Optional Gene list
-  -C [C]              Num of cores avail for parallelization
-  -X [X]              X argument for XL-mHG
-  -L [L]              L argument for XL-mHG
-  -Abbrev [ABBREV]    Choose between abbreviated or full 3-gene computation
-  -K [K]              K-gene combinations to include
-  -Down [DOWN]        Downsample
-  -Trim [TRIM]        Trim output files
-  -Count [COUNT]      Set to True when count data is being used, for
-                      visualizations.
-  -tenx [TENX]        Set to True when count data is being used, for
-                      visualizations.
-  -online [ONLINE]    Set to True for online version.
-  -skipvis [SKIPVIS]  Set to True to skip visualizations.
-
-CD34N-CD235AP
-GM-KV_CD34N-CD235AN/run_report.yaml:Reads processed: 7523211
-GM-KV_CD34N-CD235AN/run_report.yaml:Percentage mapped: 84
-GM-KV_CD34N-CD235AN/run_report.yaml:    Expected cells: 8236
-GM-KV_CD34N-CD235AP/run_report.yaml:Reads processed: 8337770
-GM-KV_CD34N-CD235AP/run_report.yaml:Percentage mapped: 79
-GM-KV_CD34N-CD235AP/run_report.yaml:    Expected cells: 5281
-GM-KV_CD34P-Bulk/run_report.yaml:Reads processed: 10646298
-GM-KV_CD34P-Bulk/run_report.yaml:Percentage mapped: 90
-GM-KV_CD34P-Bulk/run_report.yaml:       Expected cells: 9576
-GM-KV_CD34P-GPI80P/run_report.yaml:Reads processed: 10664297
-GM-KV_CD34P-GPI80P/run_report.yaml:Percentage mapped: 93
-GM-KV_CD34P-GPI80P/run_report.yaml:     Expected cells: 8129
-
 cell bc  1-16     UMI 17-26
 
-
-# RunALRA() seurat imputation
-
-# Velocity:
-http://htmlpreview.github.io/?https://github.com/satijalab/seurat-wrappers/blob/master/docs/velocity.html
-1. get looms for each individual library (velocyto.sh)
-2. run velocyto.R for each combination of loom and pre-analyzed individual Seurat objects (velocyto.Rmd and parameters)
-3. run velocyto.R for pre-analyzed combined analysis and all individual looms (velocyto.sh on combined data after merge.sctransform...)
-
-
-# Clean dataset
-Sample  Cell_number
-CD34N-CD235AN 6899
-CD34N-CD235AP 3645
-CD34P-Bulk  8739
-CD34P-GPI80P  7237
 
 
 
